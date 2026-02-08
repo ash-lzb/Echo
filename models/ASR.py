@@ -8,7 +8,7 @@ import pyaudio
 from dashscope.audio.asr import *
 
 mic = None
-stream = None
+streamInput = None
 
 # Set recording parameters
 sample_rate = 16000  # sampling rate (Hz)
@@ -18,7 +18,20 @@ format_pcm = 'pcm'  # the format of the audio data
 block_size = 3200  # number of frames per buffer
 
 
-class SpeechRecognition:
+def init_dashscope_api_key():
+    """
+        Set your DashScope API-key. More information:
+        https://github.com/aliyun/alibabacloud-bailian-speech-demo/blob/master/PREREQUISITES.md
+    """
+
+    if 'DASHSCOPE_API_KEY' in os.environ:
+        dashscope.api_key = os.environ[
+            'DASHSCOPE_API_KEY']  # load API-key from environment variable DASHSCOPE_API_KEY
+    else:
+        dashscope.api_key = 'sk-d239f644a54d4c109e494a6e3f6b7697'  # set API-key manually
+
+
+class ASRProcess:
     def __init__(self, callback):
             # Create the translation callback
             self.callback = callback
@@ -35,17 +48,6 @@ class SpeechRecognition:
                 semantic_punctuation_enabled=False,
                 callback=self.callback)
             
-    def init_dashscope_api_key(self):
-        """
-            Set your DashScope API-key. More information:
-            https://github.com/aliyun/alibabacloud-bailian-speech-demo/blob/master/PREREQUISITES.md
-        """
-
-        if 'DASHSCOPE_API_KEY' in os.environ:
-            dashscope.api_key = os.environ[
-                'DASHSCOPE_API_KEY']  # load API-key from environment variable DASHSCOPE_API_KEY
-        else:
-            dashscope.api_key = 'sk-d239f644a54d4c109e494a6e3f6b7697'  # set API-key manually
 
     def signal_handler(self, sig, frame):
         print('Ctrl+C pressed, stop translation ...')
@@ -63,7 +65,6 @@ class SpeechRecognition:
         sys.exit(0)
 
     def start(self):
-        self.init_dashscope_api_key()
         print('Initializing ...')
 
         # Start translation
@@ -73,36 +74,45 @@ class SpeechRecognition:
         print("Press 'Ctrl+C' to stop recording and translation...")
         # Create a keyboard listener until "Ctrl+C" is pressed
 
+        if not streamInput:
+            return
+
         while True:
-            if stream:
-                data = stream.read(3200, exception_on_overflow=False)
+            data = streamInput.read(3200, exception_on_overflow=False)
+            if self.callback.chat.chatting == 0:
                 self.recognition.send_audio_frame(data)
             else:
-                break
+                continue
 
         self.recognition.stop()
 
 
 # Real-time speech self.recognition callback
-class Callback(RecognitionCallback):
+class ASRCallback(RecognitionCallback):
+    def __init__(self, on_response=None, on_sentence_end=None, chat=None):
+        super().__init__()
+        self.on_response = on_response
+        self.on_sentence_end = on_sentence_end
+        self.chat = chat
+
     def on_open(self) -> None:
         global mic
-        global stream
+        global streamInput
         print('self.recognitionCallback open.')
         mic = pyaudio.PyAudio()
-        stream = mic.open(format=pyaudio.paInt16,
+        streamInput = mic.open(format=pyaudio.paInt16,
                           channels=1,
                           rate=16000,
                           input=True)
 
     def on_close(self) -> None:
         global mic
-        global stream
+        global streamInput
         print('self.recognitionCallback close.')
-        stream.stop_stream()
-        stream.close()
+        streamInput.stop_stream()
+        streamInput.close()
         mic.terminate()
-        stream = None
+        streamInput = None
         mic = None
 
     def on_complete(self) -> None:
@@ -112,22 +122,29 @@ class Callback(RecognitionCallback):
         print('self.recognitionCallback task_id: ', message.request_id)
         print('self.recognitionCallback error: ', message.message)
         # Stop and close the audio stream if it is running
-        if 'stream' in globals() and stream.active:
-            stream.stop()
-            stream.close()
+        if 'stream' in globals() and streamInput.active:
+            streamInput.stop()
+            streamInput.close()
         # Forcefully exit the program
         sys.exit(1)
 
     def on_event(self, result: RecognitionResult) -> None:
         sentence = result.get_sentence()
         if 'text' in sentence:
+            if self.on_response:
+                self.on_response(sentence['text'])
             print('self.recognitionCallback text: ', sentence['text'])
             if RecognitionResult.is_sentence_end(sentence):
+                if self.chat:
+                    self.chat.setChatting(1)
+                if self.on_sentence_end:
+                    self.on_sentence_end(sentence['text'])
                 print(
                     'self.recognitionCallback sentence end, request_id:%s, usage:%s'
                     % (result.get_request_id(), result.get_usage(sentence)))
 
 
 if __name__ == "__main__":
-    sr = SpeechRecognition(Callback())
+    init_dashscope_api_key()
+    sr = ASRProcess(ASRCallback())
     sr.start()
